@@ -2,23 +2,24 @@ import os
 from dotenv import load_dotenv
 from llama_cpp import Llama
 from langchain_deepseek import ChatDeepSeek
+from langchain_core.messages import convert_to_openai_messages
 
 load_dotenv()
-_llm = None
+
+class LocalLLM:
+    def __init__(self):
+        self._llm = Llama(model_path=os.getenv('LOCAL_MODEL_PATH'), n_gpu_layers=28, temperature=0.5)
+
+    def invoke(self, messages) -> str:
+        r = self._llm.create_chat_completion(messages=convert_to_openai_messages(messages), stream=False)
+        return r['choices'][0]['message']['content']
+
+class RemoteLLM:
+    def __init__(self):
+        self._llm = ChatDeepSeek(api_key=os.getenv('DEEPSEEK_API_KEY'), temperature=0.5)
+
+    def invoke(self, messages) -> str:
+        return self._llm.invoke(messages).content
 
 def get_llm(local: bool = True):
-    global _llm
-    if _llm is None:
-        if local:
-            _llm = Llama(
-                model_path=os.getenv('LOCAL_MODEL_PATH'),
-                n_gpu_layers=28,
-                temperature=0.5
-            )
-        else:
-            _llm = ChatDeepSeek(
-                api_key=os.getenv('DEEPSEEK_API_KEY'),
-                temperature=0.5
-            )
-
-    return _llm, local
+    return (LocalLLM() if local else RemoteLLM(), local)
