@@ -19,7 +19,7 @@ class LocalLLM:
 
 class RemoteLLM:
     def __init__(self):
-        self._llm = ChatDeepSeek(api_key=os.getenv('DEEPSEEK_API_KEY'), temperature=0.5)
+        self._llm = ChatDeepSeek(api_key=os.getenv('DEEPSEEK_API_KEY'), temperature=0.5, streaming=True)
 
     def invoke(self, messages) -> str:
         return self._llm.invoke(messages).content
