@@ -1,0 +1,68 @@
+{
+  "tools": {
+    "run_command": {
+      "enabled": true,
+      "permissions": {
+        "default": "deny",
+        "allow": [
+          "ls",
+          "pwd",
+          "git status",
+          "git diff",
+          "cat",
+          "head",
+          "tail",
+          "find",
+          "grep"
+        ],
+        "ask": [
+          "git push",
+          "git pull",
+          "mkdir",
+          "rm",
+          "cp",
+          "mv"
+        ],
+        "deny": [
+          "sudo",
+          "shutdown",
+          "reboot",
+          "mkfs",
+          "dd",
+          "chmod",
+          "chown"
+        ]
+      }
+    },
+    "read_file": {
+      "enabled": true,
+      "permissions": {
+        "default": "deny",
+        "allow_paths": [
+          "/home/adityagautam/Desktop/Projects/**"
+        ],
+        "deny_paths": [
+          "/etc/**",
+          "/root/**",
+          "/home/adityagautam/.ssh/**",
+          "/home/adityagautam/.aws/**"
+        ]
+      }
+    },
+    "write_file": {
+      "enabled": true,
+      "permissions": {
+        "default": "ask",
+        "allow_paths": [
+          "/home/adityagautam/Desktop/Projects/**"
+        ],
+        "deny_paths": [
+          "/etc/**",
+          "/root/**",
+          "/home/adityagautam/.ssh/**",
+          "/home/adityagautam/.aws/**"
+        ]
+      }
+    }
+  }
+}

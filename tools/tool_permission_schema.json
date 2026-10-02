@@ -1,7 +1,0 @@
-{
-     "run_command": {
-        "allow": ["ls", "git status"],
-        "deny": [],
-        "ask": ["git push", "git pull", "cd", "mkdir", "rm -rf"]
-    }
-}
