@@ -1,35 +1,26 @@
 import os
 import uuid
+import asyncio
+from dotenv import load_dotenv
 from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.postgres import PostgresSaver
+from langgraph.types import Command
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.prebuilt import ToolNode
-from langgraph.store.postgres import PostgresStore
-from psycopg_pool import ConnectionPool, AsyncConnectionPool
+from psycopg_pool import AsyncConnectionPool
 from psycopg.rows import dict_row
-from dotenv import load_dotenv
-import json
-import asyncio
 
-from state import chat_node, ModelState, should_continue, tools, tool_router
-from tools.tool_call import run_command
-from create_agent import run_jarvis, agent
-from langchain_core.messages import AIMessage
+from state import ModelState, tools, tool_router
+from create_agent import agent
 from tools.permission_ui import ask_user_permission
-from langgraph.types import Command
+import json
+
+schema_path = "/home/adityagautam/Desktop/Projects/aemon-ai/tools/tool_schema.json"
+
 
 load_dotenv()
 
 tool_node = ToolNode(tools)
 config = {"configurable": {"thread_id": str(uuid.uuid4())}}
-
-
-
-"""store = PostgresStore(pool)
-store.setup()
-
-checkpointer = PostgresSaver(pool)
-checkpointer.setup()"""
 
 def text_of(msg) -> str:
     return msg.content if isinstance(msg.content, str) else "".join(
@@ -38,24 +29,17 @@ def text_of(msg) -> str:
 
 def stamp(state: ModelState) -> dict:
     return {"llm_response": text_of(state["messages"][-1])}
-
-        
+    
 class Aemon:
     graph = StateGraph(ModelState)
 
-    graph.add_node('chat_node', agent)
+    graph.add_node('agent', agent)
     graph.add_node('stamp', stamp)
-    #graph.add_node('jarvis', run_jarvis)
     graph.add_node('tool_node', tool_node)
     graph.add_node('tool1_router', tool_router)
 
-    graph.add_edge(START, 'chat_node')
-   #graph.add_conditional_edges('chat_node', should_continue, {
-    #    'tool_node': 'tool_node',
-     #   END: END
-    #})
-    #graph.add_edge('tool_node', 'chat_node')
-    graph.add_edge('chat_node', 'stamp')
+    graph.add_edge(START, 'agent')
+    graph.add_edge('agent', 'stamp')
     graph.add_edge('stamp', END)
 
     
