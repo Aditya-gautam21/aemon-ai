@@ -1,25 +1,40 @@
-import os
-from dotenv import load_dotenv
-from llama_cpp import Llama
-from langchain_deepseek import ChatDeepSeek
-from langchain_core.messages import convert_to_openai_messages
-from langchain_community.chat_models import ChatLlamaCpp
-
-load_dotenv()
+import subprocess
+from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
+import time 
 
 class LocalLLM:
     def __init__(self):
-        self._llm = ChatLlamaCpp(model_path=os.getenv('LOCAL_MODEL_PATH'), n_gpu_layers=24, n_batch=512, n_ctx=8192, temperature=0.5, verbose=False)
+        cmd = [
+            "llama-server",
+            "-m", "/home/adityagautam/llama.cpp/models/google_gemma-4-E4B-it-Q4_K_M.gguf",
+            "--host", "0.0.0.0",
+            "--port", "8080",
+            "-ngl", "999",
+            "-c", "8192",
+            "--flash-attn", "on",
+            "--jinja"
+        ]
 
-    def invoke(self, messages) -> str:
-        return self._llm.invoke(messages).content
+        subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            )
+        
+        time.sleep(10)
 
-    def bind_tools(self, tools):
-        return self._llm.bind_tools(tools)
+        self._llm = ChatAnthropic(
+            base_url="http://0.0.0.0:8080",
+            api_key="not-needed",
+            model="Qwen3.5-4B-Q4_K_M",
+            streaming=True
+        )
 
 class RemoteLLM:
     def __init__(self):
-        self._llm = ChatDeepSeek(api_key=os.getenv('DEEPSEEK_API_KEY'), temperature=0.5, streaming=True)
+        self._llm = ChatOpenAI(model="openai/gpt-oss-120b:free", base_url="https://openrouter.ai", api_key=os.getenv('OPENROUTER_API_KEY'), temperature=0.5, streaming=True)
 
     def invoke(self, messages) -> str:
         return self._llm.invoke(messages).content
