@@ -5,10 +5,18 @@ import time
 import urllib.request
 from pathlib import Path
 
+from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
 
-SERVER_LOG = Path(__file__).resolve().parent / ".llama-server.log"
+PROJECT_DIR = Path(__file__).resolve().parent
+SERVER_LOG = PROJECT_DIR / ".llama-server.log"
+
+# Loaded here, and not by the callers, because state.py builds the LLM at import
+# time -- before agent.py reaches its own load_dotenv(). An explicit path also
+# makes the config independent of the current working directory. Real exported
+# variables still win over the file.
+load_dotenv(PROJECT_DIR / ".env")
 
 # Hosts that mean "every interface" -- clients must connect to loopback instead.
 WILDCARD_HOSTS = ("0.0.0.0", "::")

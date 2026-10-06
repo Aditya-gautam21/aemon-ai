@@ -306,13 +306,19 @@ def _runQuiet(cmd: list[str], timeout: int = 15) -> str:
         return ""
 
 
-def detect_cuda_version() -> float | None:
-    """Highest CUDA runtime the driver supports, or None when no NVIDIA GPU."""
+def detect_nvidia() -> tuple[bool, float | None]:
+    """Return (NVIDIA GPU present, highest CUDA runtime the driver supports).
+
+    The banner line has changed format across driver generations -- older ones
+    print ``CUDA Version: 12.4``, newer ones ``CUDA UMD Version: 13.3`` -- so both
+    spellings are accepted. A GPU whose version line cannot be parsed still
+    counts as present, which keeps CUDA builds from being dropped entirely.
+    """
     out = _runQuiet(["nvidia-smi"])
-    m = re.search(r"CUDA Version:\s*(\d+\.\d+)", out)
-    if m:
-        return float(m.group(1))
-    return None
+    if not out:
+        return False, None
+    m = re.search(r"CUDA (?:UMD |GPU )?Version:\s*(\d+(?:\.\d+)?)", out)
+    return True, float(m.group(1)) if m else None
 
 
 def detect_vulkan() -> bool:
@@ -332,13 +338,44 @@ def _moltenvk_paths() -> list[str]:
         glob.glob(os.path.expanduser("~/Library/Frameworks/MoltenVK*"))
 
 
+def total_vram_bytes() -> int | None:
+    """Summed video memory across NVIDIA GPUs, or None when there are none.
+
+    Apple Silicon reports unified memory, so VRAM is not a separate constraint
+    there and None correctly means 'only system RAM applies'.
+    """
+    out = _runQuiet(["nvidia-smi", "--query-gpu=memory.total",
+                     "--format=csv,noheader,nounits"])
+    mib = [float(x) for x in re.findall(r"\d+(?:\.\d+)?", out)]
+    return int(sum(mib) * 1024 * 1024) if mib else None
+
+
+def fit_budget(ram: int | None, vram: int | None) -> tuple[int | None, str]:
+    """Tightest model size for this machine, and what bounds it.
+
+    With GPU offload the video memory is the real limit -- a model that fits RAM
+    comfortably can still fail to allocate on the GPU, so the stricter of the two
+    wins. 85% of VRAM leaves room for the KV cache.
+    """
+    caps: list[tuple[int, str]] = []
+    if ram:
+        caps.append((int(ram * 0.75), f"RAM ({human_size(ram)})"))
+    if vram:
+        caps.append((int(vram * 0.85), f"VRAM ({human_size(vram)})"))
+    if not caps:
+        return None, ""
+    return min(caps, key=lambda c: c[0])
+
+
 def detect_gpu_summary() -> str:
     bits = []
-    cuda = detect_cuda_version()
-    if cuda:
-        bits.append(f"NVIDIA CUDA {cuda}")
+    nvidia, cuda = detect_nvidia()
+    vram = total_vram_bytes()
+    if nvidia:
+        shown = f"CUDA {cuda}" if cuda else "CUDA driver present, version unparsable"
+        bits.append(f"NVIDIA {shown} · {human_size(vram)} VRAM" if vram else f"NVIDIA {shown}")
     elif IS_MACOS:
-        bits.append("Apple Silicon (Metal)")
+        bits.append("Apple Silicon (Metal, unified memory)")
     if detect_vulkan():
         bits.append("Vulkan")
     if not bits:
@@ -436,10 +473,10 @@ def rank_build_candidates(release: dict, os_key: str, arch: str) -> list[dict]:
     beats Vulkan, which beats CPU-only. Builds whose CUDA version exceeds the
     driver's are demoted below CPU rather than offered first.
     """
-    cuda = detect_cuda_version()
+    nvidia, cuda = detect_nvidia()
     cuda_build = (int(cuda), int(round((cuda - int(cuda)) * 10))) if cuda else None
     vulkan = detect_vulkan()
-    scored: list[tuple[int, dict]] = []
+    scored: list[tuple[float, dict]] = []
 
     for asset in _assets_for(release):
         name = asset["name"]
@@ -451,8 +488,12 @@ def rank_build_candidates(release: dict, os_key: str, arch: str) -> list[dict]:
             score = 100  # Metal is already compiled into the macOS builds
         elif kind == "cuda":
             m = re.search(r"cuda-(\d+)\.(\d+)", name)
-            if not cuda or not m:
+            if not nvidia or not m:
                 score = 15  # no NVIDIA GPU (or unknown) -- keep it as a last resort
+            elif cuda_build is None:
+                # Driver present but its CUDA level unreadable: offer the most
+                # conservative (lowest) build, still ranked ahead of Vulkan.
+                score = 95 - _cuda_version_key(name) / 1000
             else:
                 score = 120 if (int(m.group(1)), int(m.group(2))) <= cuda_build else 15
         elif kind == "vulkan":
@@ -910,23 +951,26 @@ def format_model(m: dict) -> str:
             f"{human_size(m['size'])} · {m['path'].parent}")
 
 
-def pick_model(models: list[dict], ram: int | None) -> tuple[str, dict | None]:
-    """Paginated model picker with a RAM-fit hint.
+def pick_model(models: list[dict], ram: int | None, vram: int | None) -> tuple[str, dict | None]:
+    """Paginated model picker with a fit hint.
 
     Returns ``('pick', model)``, or ``('rescan', None)`` / ``('newdir', None)``
     so the caller knows whether to re-scan the same tree or ask for a new one.
     """
     models = sorted(models, key=lambda m: m["size"])
+    limit, bounded_by = fit_budget(ram, vram)
     page, per = 0, 15
     while True:
         start = page * per
         chunk = models[start:start + per]
-        total_ram = human_size(ram) if ram else "unknown"
-        print(S.dim(f"  {len(models)} model(s), smallest first · system RAM {total_ram} "
-                    f"· page {page + 1}"))
+        print(S.dim(f"  {len(models)} model(s), smallest first · safe size "
+                    f"{human_size(limit) if limit else 'unknown'} (bounded by {bounded_by or 'unknown'})"
+                    f" · page {page + 1}"))
         for i, m in enumerate(chunk, start + 1):
-            tight = S.yellow("   (tight for RAM)") if ram and m["size"] > ram * 0.75 else ""
-            print(f"    {S.cyan(f'{i:>3}.')} {format_model(m)}{tight}")
+            over = ""
+            if limit and m["size"] > limit:
+                over = S.yellow("   (will likely not fit on GPU/RAM)")
+            print(f"    {S.cyan(f'{i:>3}.')} {format_model(m)}{over}")
 
         nav = ask(S.dim("model number · n next · p prev · r rescan · d new dir"),
                   str(start + 1)).strip().lower()
@@ -952,9 +996,13 @@ def pick_model(models: list[dict], ram: int | None) -> tuple[str, dict | None]:
             print(S.yellow(f"    Pick a number between 1 and {len(models)}."))
             continue
         chosen = models[idx]
-        if ram and chosen["size"] > ram:
-            warn(f"{chosen['name']} ({human_size(chosen['size'])}) is bigger than your "
-                 f"{human_size(ram)} of RAM -- expect slow loads or a failure to start.")
+        if limit and chosen["size"] > limit:
+            warn(f"{chosen['name']} is {human_size(chosen['size'])}, over this machine's "
+                 f"~{human_size(limit)} working budget ({bounded_by}). With -ngl 999 the "
+                 "server may fail to allocate it -- lower LLAMA_NGL or pick a smaller quant.")
+        elif chosen["size"] > (vram or 0) and vram:
+            warn(f"{chosen['name']} exceeds the {human_size(vram)} of VRAM, so most layers "
+                 "will stay in system RAM -- expect slower generation.")
         return "pick", chosen
 
 
@@ -1146,7 +1194,32 @@ def setup_llama_server(non_interactive: bool, force_download: bool,
 
 def _ask_models_dir(current: Path) -> Path:
     raw = ask("Directory that holds your .gguf files", str(current))
-    return Path(raw).expanduser()
+    return Path(raw)
+
+
+def _validated_dir(root: Path, non_interactive: bool) -> Path:
+    """Expand ``~`` and make the directory usable, creating it only with consent.
+
+    Scanning a path that was typed by mistake used to leave empty directories
+    behind, so a missing path is now confirmed first and a non-directory is an
+    error rather than something to work around.
+    """
+    root = Path(root).expanduser()
+    if root.is_file():
+        raise RuntimeError(f"{root} is a file, not a directory.")
+    if root.is_dir():
+        return root
+    if non_interactive:
+        raise RuntimeError(f"{root} does not exist. Pass --models-dir with an existing "
+                           "directory, or run without --yes to create it.")
+    if not confirm(f"{root} does not exist yet -- create it?", True):
+        return _validated_dir(_ask_models_dir(suggest_model_dir()), non_interactive)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise RuntimeError(f"Cannot create {root}: {exc}") from exc
+    ok(f"Created {root}")
+    return root
 
 
 def setup_model(non_interactive: bool, models_dir: str | None,
@@ -1161,16 +1234,13 @@ def setup_model(non_interactive: bool, models_dir: str | None,
         return {"LLAMA_MODELS_DIR": str(path.parent), "LOCAL_MODEL_PATH": str(path),
                 "LOCAL_MODEL_NAME": path.stem}
 
-    root = Path(models_dir).expanduser() if models_dir else suggest_model_dir()
-    ram = total_ram_bytes()
+    root = Path(models_dir) if models_dir else suggest_model_dir()
+    ram, vram = total_ram_bytes(), total_vram_bytes()
+    limit, bounded_by = fit_budget(ram, vram)
     models: list[dict] = []
 
     while True:
-        try:
-            root.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            raise RuntimeError(f"Cannot use {root}: {exc}") from exc
-
+        root = _validated_dir(root, non_interactive)
         step(f"Scanning {root} for .gguf files")
         models = scan_gguf_models(root)
         if models:
@@ -1185,22 +1255,25 @@ def setup_model(non_interactive: bool, models_dir: str | None,
         root = _ask_models_dir(root)
 
     if non_interactive:
-        fits = [m for m in models if not ram or m["size"] <= ram * 0.75]
-        chosen = max(fits or models, key=lambda m: m["size"])
+        # Biggest model this machine can realistically load, preferring the GPU
+        # budget; if nothing fits, take the smallest rather than a guaranteed OOM.
+        fits = [m for m in models if not limit or m["size"] <= limit]
+        if fits:
+            chosen = max(fits, key=lambda m: m["size"])
+        else:
+            chosen = min(models, key=lambda m: m["size"])
+            warn(f"No model fits the ~{human_size(limit)} budget ({bounded_by}); picking "
+                 f"the smallest, {chosen['name']}. Set LLAMA_NGL lower to run a bigger one.")
         step(f"Auto-selected {chosen['name']} ({human_size(chosen['size'])})")
     else:
         while True:
-            action, picked = pick_model(models, ram)
+            action, picked = pick_model(models, ram, vram)
             if action == "pick":
                 chosen = picked
                 break
             if action == "newdir":
                 root = _ask_models_dir(root)
-            try:
-                root.mkdir(parents=True, exist_ok=True)
-            except OSError as exc:
-                warn(f"Cannot use {root}: {exc}")
-                continue
+            root = _validated_dir(root, non_interactive)
             step(f"Scanning {root} for .gguf files")
             fresh = scan_gguf_models(root)
             if fresh:
@@ -1385,9 +1458,18 @@ def main(argv: list[str] | None = None) -> int:
     updates = {**llama, **models, **runtime}
     write_env(updates)
 
-    if args.yes or confirm("Boot the server once to verify it works?", True):
-        if not smoke_test(llama, models, runtime):
+    attempts = 0
+    while args.yes or confirm("Boot the server once to verify it works?", True):
+        if smoke_test(llama, models, runtime):
+            break
+        attempts += 1
+        if args.yes or attempts > 2 or not confirm(
+                "Pick a different model? (a GGUF too large for VRAM is the usual cause)", True):
             warn("The agent may not start -- rerun the test with: python setup.py --check")
+            break
+        models = setup_model(False, models["LLAMA_MODELS_DIR"], None)
+        updates.update(models)
+        write_env(updates)
 
     updates.update(setup_database(read_env().get("DATABASE_URL", "")))
     write_env(updates)
