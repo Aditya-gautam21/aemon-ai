@@ -1,4 +1,18 @@
 import os
+import warnings
+
+# Silence TF/absl/glog C++-level logging before tensorflow/torch get imported.
+# Must happen before the sentence_transformers import below.
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")   # TF INFO + WARNING
+os.environ.setdefault("GLOG_minloglevel", "2")       # absl/glog INFO + WARNING
+
+# torch's _pytree deprecation notice about register_constant() on Enum subclasses.
+# It's emitted via the logging module (glog-style), not warnings.
+warnings.filterwarnings("ignore", message=r".*register_constant\(\).*", module=r"torch\.utils\._pytree")
+import logging
+logging.getLogger("torch.utils._pytree").setLevel(logging.ERROR)
+logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
+
 import uuid
 import asyncio
 from dotenv import load_dotenv
@@ -9,20 +23,26 @@ from langgraph.prebuilt import ToolNode
 from psycopg_pool import AsyncConnectionPool
 from psycopg.rows import dict_row
 from langgraph.store.postgres.aio import AsyncPostgresStore
-import subprocess
 from sentence_transformers import SentenceTransformer
-import logging
 
 from state import ModelState, tools
 from create_agent import chat_agent, memory_agent
+from llm import get_llm
 from tools.permission_ui import ask_user_permission
 import json
 
-logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
+from rich.console import Console
+from rich.panel import Panel
+from prompt_toolkit import PromptSession
+from prompt_toolkit.formatted_text import HTML
+
 schema_path = "/home/adityagautam/Desktop/Projects/aemon-ai/tools/tool_schema.json"
 _st = SentenceTransformer("all-MiniLM-L6-v2")
 
 load_dotenv()
+
+console = Console()
+prompt_session = PromptSession()
 
 tool_node = ToolNode(tools)
 config = {"configurable": {"thread_id": str(uuid.uuid4())}}
@@ -70,13 +90,19 @@ async def main():
 
         workflow = Aemon.graph.compile(checkpointer=checkpointer, store=store)
         while True:
-            user_input = await asyncio.to_thread(input, 'User: ')
+            user_input = await asyncio.to_thread(prompt_session.prompt,  HTML('<cyan><bold>You ❯</bold></cyan> '),)
             if user_input.lower() in ['exit']:
-                subprocess.call(['pkill', '-9', 'llama-server'])
+                get_llm(local=True).stop()
                 break
 
             initial_input = {"messages": [{"role": "user", "content": user_input}]}
-            print("Jarvis: ", end="", flush=True)
+            #print("Jarvis: ", end="", flush=True)
+            #console.print()
+
+            spinner = console.status("[dim]thinking/[/dim]")
+            spinner.start()
+            first_token = True
+
 
             async for event in workflow.astream_events(initial_input, config=config):
                 if event["event"] == "on_chat_model_stream":
@@ -85,7 +111,13 @@ async def main():
                     if message_chunk.content:
                         for block in message_chunk.content:
                             if isinstance(block, dict) and block.get("type") == "text":
-                                print(block.get("text", ""), end="", flush=True)
+                                if block.get("text", ""):
+                                    if first_token:
+                                        spinner.stop()
+                                        console.print("[bold yellow]Aemon:[/bold yellow]", end=" ")
+                                        first_token = False
+                                    print(block.get("text"), end="", flush=True)
+            spinner.stop()
 
             state = await workflow.aget_state(config=config)
             while state.tasks and any(t.interrupts for t in state.tasks):
