@@ -1,15 +1,12 @@
 import os
 import warnings
+import logging
 
-# Silence TF/absl/glog C++-level logging before tensorflow/torch get imported.
-# Must happen before the sentence_transformers import below.
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")   # TF INFO + WARNING
 os.environ.setdefault("GLOG_minloglevel", "2")       # absl/glog INFO + WARNING
 
-# torch's _pytree deprecation notice about register_constant() on Enum subclasses.
-# It's emitted via the logging module (glog-style), not warnings.
 warnings.filterwarnings("ignore", message=r".*register_constant\(\).*", module=r"torch\.utils\._pytree")
-import logging
+
 logging.getLogger("torch.utils._pytree").setLevel(logging.ERROR)
 logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
 
@@ -36,7 +33,6 @@ from rich.panel import Panel
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
 
-schema_path = "/home/adityagautam/Desktop/Projects/aemon-ai/tools/tool_schema.json"
 _st = SentenceTransformer("all-MiniLM-L6-v2")
 
 load_dotenv()

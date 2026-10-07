@@ -8,16 +8,16 @@ from langgraph.store.base import BaseStore
 
 from prompts import JUDGE_PROMPT, aemon_personality
 from state import ModelState
+from tools.tool_call import remember, recall
 
 load_dotenv()
 
 model = get_llm(local=True)._llm
-schema_path = "/home/adityagautam/Desktop/Projects/aemon-ai/tools/tool_schema.json"
 
 chat_agent = create_agent(
     model=model,
     tools=[run_command, remember, recall],
-    middleware=[PermissionMiddleware(schema_path=schema_path),
+    middleware=[PermissionMiddleware([run_command, remember, recall]),
                 TodoListMiddleware(),
                 ClearToolUsesEdit_and_friends := ContextEditingMiddleware(edits=[ClearToolUsesEdit(trigger=6000, keep=2)]),
                 ModelCallLimitMiddleware(run_limit=12, exit_behavior="end"),

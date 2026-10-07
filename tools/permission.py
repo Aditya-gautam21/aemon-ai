@@ -1,5 +1,6 @@
-import json
+import re
 from enum import Enum
+from pathlib import Path
 import questionary
 from questionary import Choice
 from typing import Any, Awaitable, Callable
@@ -13,6 +14,48 @@ class Permission(Enum):
     SESSION = "allow_for_this_session"
     ALWAYS = "always_allow"
     DENY = "deny"
+
+# Tool args whose name hints they carry a filesystem path or a shell command.
+_PATH_ARG = re.compile(r"(path|file|dir|folder)", re.IGNORECASE)
+_COMMAND_ARG = re.compile(r"(command|cmd|shell)", re.IGNORECASE)
+
+COMMAND_ALLOW = ["ls", "pwd", "git status", "git diff",
+                 "cat", "head", "tail", "find", "grep"]
+COMMAND_DENY = ["sudo", "shutdown", "reboot", "mkfs", "dd", "chmod", "chown"]
+
+
+def build_tool_schema(tools) -> dict:
+    """Derive the permission schema from the tools themselves.
+
+    Each tool contributes an entry keyed by its name: args that look like
+    shell commands get the command policy, args that look like filesystem
+    paths get a path policy rooted at the current working directory,
+    everything else is allowed to run ungated.
+    """
+    root = str(Path.cwd())
+    schema = {}
+    for t in tools:
+        name = getattr(t, "name", None) or type(t).__name__
+        try:
+            props = t.args_schema.schema()["properties"]
+        except Exception:
+            props = {}
+
+        if any(_COMMAND_ARG.search(arg) for arg in props):
+            schema[name] = {"enabled": True, "permissions": {
+                "default": "ask",
+                "allow": COMMAND_ALLOW,
+                "deny": COMMAND_DENY,
+            }}
+        elif any(_PATH_ARG.search(arg) for arg in props):
+            schema[name] = {"enabled": True, "permissions": {
+                "default": "ask",
+                "allow_paths": [f"{root}/**"],
+                "deny_paths": [str(Path.home() / ".ssh/**"), str(Path.home() / ".aws/**")],
+            }}
+        else:
+            schema[name] = {"enabled": True, "permissions": {"default": "allow"}}
+    return schema
 
 async def permission_ui(command):
         answer = questionary.select(
@@ -28,10 +71,10 @@ async def permission_ui(command):
         return answer
 
 class PermissionMiddleware(AgentMiddleware):
-    def __init__(self, schema_path):
+    def __init__(self, tools):
         super().__init__()
-        with open (schema_path) as f:
-            self.config = json.load(f)['tools']
+        # Schema is generated from the tool definitions, not a hand-maintained file.
+        self.config = build_tool_schema(tools)
 
     async def awrap_tool_call(self, request: ToolCallRequest, handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]]) -> Permission:
         tool_name, args = request.tool_call["name"], request.tool_call["args"]
