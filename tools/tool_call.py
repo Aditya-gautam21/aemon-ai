@@ -1,3 +1,4 @@
+import os
 import subprocess
 from langchain_core.tools import tool
 from langgraph.config import get_store
@@ -6,6 +7,25 @@ import hashlib
 import re
 
 _ws = re.compile(r"\s+")
+
+def _clean_env() -> dict:
+    """Return a copy of os.environ with conda's library paths stripped.
+
+    The agent runs inside a conda env whose libreadline.so.8 lacks symbols the
+    system shell links against (e.g. rl_print_keybinding), which makes every
+    subprocess shell fail at startup with exit code 127.
+    """
+    env = os.environ.copy()
+    env.pop("LD_PRELOAD", None)
+
+    conda_lib = os.path.join(env.get("CONDA_PREFIX", ""), "lib") if env.get("CONDA_PREFIX") else ""
+    lib_path = env.get("LD_LIBRARY_PATH", "")
+    parts = [p for p in lib_path.split(":") if p and p != conda_lib and "mambaforge" not in p and "miniconda" not in p and "anaconda" not in p]
+    if parts:
+        env["LD_LIBRARY_PATH"] = ":".join(parts)
+    else:
+        env.pop("LD_LIBRARY_PATH", None)
+    return env
 
 def _make_key(fact: str):
     normalised = _ws.sub(" ", fact.strip().lower())
@@ -20,7 +40,8 @@ def run_command(command: str) -> str:
         shell=True,
         capture_output=True,
         text=True,
-        timeout=30
+        timeout=30,
+        env=_clean_env()
     )
 
     return (
